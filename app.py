@@ -1,8 +1,12 @@
-import random
 from flask import Flask, request, jsonify
+from flask_socketio import SocketIO, emit
+from flask_cors import CORS
+import random
 
 app = Flask(__name__)
-
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app, cors_allowed_origins="*")
+CORS(app)
 # --------- Data Structures ---------
 
 class Cell:
@@ -17,7 +21,14 @@ class Board:
         self.rows = rows
         self.cols = cols
         self.total_mines = mines
+
         self.game_over = False
+        self.game_won = False
+
+        # Track how many safe cells are revealed so far
+        self.revealed_count = 0
+
+        # Create board
         self.cells = [[Cell() for _ in range(cols)] for _ in range(rows)]
         self._place_mines()
         self._calculate_adjacency()
@@ -48,20 +59,35 @@ class Board:
                                 count += 1
                 self.cells[r][c].adjacent_mines = count
 
+    def _check_win(self):
+        """ Check if revealed_count covers all non-mine cells. """
+        # Number of total safe cells
+        total_safe_cells = self.rows * self.cols - self.total_mines
+        if self.revealed_count == total_safe_cells:
+            self.game_over = True
+            self.game_won = True
+
     def reveal(self, r, c):
-        # Out-of-range or game over checks
+        """ Reveal the cell (r, c). If it's safe and has 0 adjacent mines, recursively reveal neighbors. """
         if r < 0 or r >= self.rows or c < 0 or c >= self.cols:
             return
         if self.game_over:
             return
+
         cell = self.cells[r][c]
+        # If already revealed or flagged, do nothing
         if cell.is_revealed or cell.is_flagged:
             return
 
+        # Reveal this cell
         cell.is_revealed = True
-        # If it was a mine, game over
-        if cell.is_mine:
+        # If it was not a mine, increment revealed_count
+        if not cell.is_mine:
+            self.revealed_count += 1
+        else:
+            # Hitting a mine => lose
             self.game_over = True
+            self.game_won = False
             return
 
         # Flood reveal if no adjacent mines
@@ -72,6 +98,9 @@ class Board:
                         continue
                     self.reveal(r + dr, c + dc)
 
+        # After revealing, check if we won
+        self._check_win()
+
     def flag(self, r, c):
         if self.game_over:
             return
@@ -80,6 +109,8 @@ class Board:
             # Toggle flag only if cell is not revealed
             if not cell.is_revealed:
                 cell.is_flagged = not cell.is_flagged
+            else:
+                return
 
 # --------- Global Game State ---------
 
@@ -87,8 +118,14 @@ board = None  # We'll store a single global board for demo
 
 # --------- Helper Functions ---------
 
-def board_to_json(b: Board):
-    # Build a JSON-friendly structure
+def board_to_json(b):
+    """Convert the board to JSON including a status: 'win', 'lose', or 'in_progress'."""
+    if b.game_over:
+        status = "win" if b.game_won else "lose"
+    else:
+        status = "in_progress"
+
+    # Build JSON structure (similar to above)
     rows_data = []
     for r in range(b.rows):
         row_list = []
@@ -110,11 +147,21 @@ def board_to_json(b: Board):
         "rows": b.rows,
         "cols": b.cols,
         "game_over": b.game_over,
+        "game_won": b.game_won,
+        "status": status,
         "board": rows_data
     }
 
-# --------- Routes ---------
+    return {
+        "rows": b.rows,
+        "cols": b.cols,
+        "game_over": b.game_over,
+        "game_won": b.game_won,
+        "status": status,
+        "board": rows_data
+    }
 
+# --------- Flask Routes ---------
 @app.route("/init", methods=["GET"])
 def init_board():
     global board
@@ -127,25 +174,19 @@ def init_board():
 
 @app.route("/reveal", methods=["GET"])
 def reveal_cell():
-    """
-    Reveal a given cell and return the updated board status
-    so that you can see exactly which cells are now revealed.
-    """
     global board
     if board is None:
         return jsonify({"error": "Board not initialized"}), 400
 
-    try:
-        r = int(request.args["row"])
-        c = int(request.args["col"])
-    except (KeyError, ValueError):
-        return jsonify({"error": "Missing or invalid parameters"}), 400
-
+    r = int(request.args.get("row", -1))
+    c = int(request.args.get("col", -1))
     if r < 0 or r >= board.rows or c < 0 or c >= board.cols:
         return jsonify({"error": "Out of range"}), 400
 
     board.reveal(r, c)
-    # Return the entire updated board
+    # After changing state, broadcast to all
+    # socketio.emit("board_update", board_to_json(board), broadcast=True)
+    socketio.emit("board_update", board_to_json(board))
     return jsonify(board_to_json(board))
 
 @app.route("/flag", methods=["GET"])
@@ -154,17 +195,14 @@ def flag_cell():
     if board is None:
         return jsonify({"error": "Board not initialized"}), 400
 
-    try:
-        r = int(request.args["row"])
-        c = int(request.args["col"])
-    except (KeyError, ValueError):
-        return jsonify({"error": "Missing or invalid parameters"}), 400
-
+    r = int(request.args.get("row", -1))
+    c = int(request.args.get("col", -1))
     if r < 0 or r >= board.rows or c < 0 or c >= board.cols:
         return jsonify({"error": "Out of range"}), 400
 
     board.flag(r, c)
-    # Return the entire updated board
+    # After changing state, broadcast to all
+    socketio.emit("board_update", board_to_json(board))
     return jsonify(board_to_json(board))
 
 @app.route("/status", methods=["GET"])
@@ -174,8 +212,5 @@ def status_board():
         return jsonify({"error": "Board not initialized"}), 400
     return jsonify(board_to_json(board))
 
-# --------- Main Entry Point ---------
-
 if __name__ == "__main__":
-    # Run Flask dev server on http://localhost:5000
-    app.run(port=8000, debug=True)
+    socketio.run(app, host="0.0.0.0", port=8000, debug=True)

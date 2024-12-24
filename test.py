@@ -64,7 +64,7 @@ def test_reveal():
 def test_flag():
     print("Testing /flag...")
     # Flag (row=2, col=2)
-    r = requests.get(f"{BASE_URL}/flag", params={"row": 2, "col": 2})
+    r = requests.get(f"{BASE_URL}/flag", params={"row": 8, "col": 9})
     if r.status_code != 200:
         print_fail(f"/flag returned status code {r.status_code}, expected 200")
 

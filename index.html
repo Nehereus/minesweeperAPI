@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Minesweeper Frontend</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    #board {
+      display: inline-block;
+      margin-top: 10px;
+    }
+    #board tr {
+      border: 0;
+      padding: 0;
+    }
+    #board td {
+      width: 30px;
+      height: 30px;
+      text-align: center;
+      vertical-align: middle;
+      border: 1px solid #aaa;
+      cursor: pointer;
+      user-select: none;
+      font-weight: bold;
+      font-size: 16px;
+    }
+    td.covered {
+      background-color: #ddd;
+    }
+    td.mine {
+      background-color: red;
+      color: white;
+    }
+    td.adj0 {
+      background-color: #eee;
+    }
+    td.adj1 {
+      color: blue;
+    }
+    td.adj2 {
+      color: green;
+    }
+    td.adj3 {
+      color: red;
+    }
+    td.adj4, td.adj5, td.adj6, td.adj7, td.adj8 {
+      color: purple;
+    }
+    #controls {
+      margin-bottom: 10px;
+    }
+    #controls input {
+      width: 50px;
+      margin-right: 5px;
+    }
+    #message {
+      margin-top: 10px;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <h1>Minesweeper</h1>
+  <div id="controls">
+    <label>Rows: <input id="rowsInput" type="number" value="9" min="1"/></label>
+    <label>Cols: <input id="colsInput" type="number" value="9" min="1"/></label>
+    <label>Mines: <input id="minesInput" type="number" value="10" min="1"/></label>
+    <button id="initBtn">Init Board</button>
+    <button id="statusBtn">Refresh Board</button>
+  </div>
+  <div id="message"></div>
+  <table id="board"></table>
+
+  <!-- Include Socket.IO client from CDN -->
+  <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"
+          crossorigin="anonymous"></script>
+
+          <script>
+            // Change these if your backend is at a different host/port
+            const baseURL = "http://localhost:8000";
+            const socketURL = "http://localhost:8000";
+          
+            const initBtn = document.getElementById('initBtn');
+            const statusBtn = document.getElementById('statusBtn');
+            const rowsInput = document.getElementById('rowsInput');
+            const colsInput = document.getElementById('colsInput');
+            const minesInput = document.getElementById('minesInput');
+            const boardTable = document.getElementById('board');
+            const messageDiv = document.getElementById('message');
+          
+            // 1. Connect Socket.IO
+            const socket = io(socketURL);
+          
+            // Listen for connection success/failure
+            socket.on("connect", () => {
+              console.log("WebSocket connected to server");
+            });
+            socket.on("disconnect", () => {
+              console.log("WebSocket disconnected from server");
+            });
+          
+            // 2. Listen for "board_update" events from the server
+            socket.on("board_update", (boardData) => {
+              console.log("Received board update via websocket");
+              renderBoard(boardData);
+            });
+          
+            // Helper: display messages in <div id="message">
+            function setMessage(msg) {
+              messageDiv.textContent = msg;
+            }
+          
+            // Helper: a generic fetch wrapper that adds desired headers and CORS mode
+            async function doFetch(url) {
+              return fetch(url, {
+                mode: 'cors',
+                headers: {
+                  'Access-Control-Allow-Origin': '*'
+                }
+              });
+            }
+          
+            // Initialize board (via REST API)
+            initBtn.addEventListener('click', async () => {
+              const rows = rowsInput.value;
+              const cols = colsInput.value;
+              const mines = minesInput.value;
+          
+              try {
+                const resp = await doFetch(`${baseURL}/init?rows=${rows}&cols=${cols}&mines=${mines}`);
+                if (!resp.ok) {
+                  setMessage(`Init failed: ${resp.statusText}`);
+                  return;
+                }
+                const data = await resp.json();
+                if (data.error) {
+                  setMessage(`Error: ${data.error}`);
+                } else {
+                  setMessage(data.message || 'Board initialized.');
+                }
+                // Refresh the board (the server might also broadcast a board update)
+                await refreshBoard();
+              } catch (err) {
+                setMessage(`Init error: ${err}`);
+              }
+            });
+          
+            // Manually refresh board (via REST API)
+            statusBtn.addEventListener('click', async () => {
+              await refreshBoard();
+            });
+          
+            // Poll the /status endpoint
+            async function refreshBoard() {
+              try {
+                const resp = await doFetch(`${baseURL}/status`);
+                if (!resp.ok) {
+                  setMessage(`Status failed: ${resp.statusText}`);
+                  return;
+                }
+                const data = await resp.json();
+                if (data.error) {
+                  setMessage(`Error: ${data.error}`);
+                  boardTable.innerHTML = "";
+                  return;
+                }
+                renderBoard(data);
+              } catch (err) {
+                setMessage(`Status error: ${err}`);
+              }
+            }
+          
+            // Render board on page
+            function renderBoard(boardData) {
+              boardTable.innerHTML = "";
+          
+              // Show a more detailed message
+              if (boardData.status === "win") {
+                setMessage("You Win!");
+              } else if (boardData.status === "lose") {
+                setMessage("You Lose!");
+              } else {
+                setMessage("Game in progress...");
+              }
+          
+              for (let r = 0; r < boardData.rows; r++) {
+                const rowEl = document.createElement('tr');
+                for (let c = 0; c < boardData.cols; c++) {
+                  const cellData = boardData.board[r][c];
+                  const cellEl = document.createElement('td');
+                  
+                  // Decide text or styling
+                  if ('covered' in cellData && cellData.covered === true) {
+                    cellEl.classList.add('covered');
+                    if (cellData.flagged) {
+                      cellEl.textContent = "F"; // flagged
+                    } else {
+                      cellEl.textContent = ""; // covered
+                    }
+                  } else if ('mine' in cellData) {
+                    cellEl.classList.add('mine');
+                    cellEl.textContent = "X";
+                  } else if ('adjacent' in cellData) {
+                    const n = cellData.adjacent;
+                    cellEl.textContent = n === 0 ? "" : n;
+                    cellEl.classList.add(`adj${n}`);
+                  }
+          
+                  // Left-click -> reveal
+                  cellEl.addEventListener('click', (evt) => {
+                    reveal(r, c);
+                  });
+          
+                  // Right-click -> flag
+                  cellEl.addEventListener('contextmenu', (evt) => {
+                    evt.preventDefault();
+                    flag(r, c);
+                  });
+          
+                  rowEl.appendChild(cellEl);
+                }
+                boardTable.appendChild(rowEl);
+              }
+            }
+          
+            // Reveal cell (REST)
+            async function reveal(row, col) {
+              try {
+                const resp = await doFetch(`${baseURL}/reveal?row=${row}&col=${col}`);
+                if (!resp.ok) {
+                  setMessage(`Reveal failed: ${resp.statusText}`);
+                  return;
+                }
+                const data = await resp.json();
+                if (data.error) {
+                  setMessage(data.error);
+                  return;
+                }
+                // Render new board
+                renderBoard(data);
+              } catch (err) {
+                setMessage(`Reveal error: ${err}`);
+              }
+            }
+          
+            // Flag cell (REST)
+            async function flag(row, col) {
+              try {
+                const resp = await doFetch(`${baseURL}/flag?row=${row}&col=${col}`);
+                if (!resp.ok) {
+                  setMessage(`Flag failed: ${resp.statusText}`);
+                  return;
+                }
+                const data = await resp.json();
+                if (data.error) {
+                  setMessage(data.error);
+                  return;
+                }
+                // Render new board
+                renderBoard(data);
+              } catch (err) {
+                setMessage(`Flag error: ${err}`);
+              }
+            }
+          
+            // On load, poll once in case there's already a board
+            refreshBoard();
+          </script>
+</body>
+</html>
